@@ -1,26 +1,23 @@
 // /api/sorteo.js
-// Sorteo seguro con control de origen, rate-limit básico y resultado estable por día (NO depende de clientId para ganar).
+// Sorteo seguro con control de origen, rate-limit básico y resultado estable por día+clientId.
 
-const PROB_WIN = Number(process.env.PROB_WIN ?? 0.18); // 0..1
+const PROB_WIN = 0.40; // probabilidad total de ganar (40%)
 const SECRET   = process.env.SORTEO_SECRET || "TeamL5_2025_secret_x91";
 
 const LOSE_TEXT = "😅 Sin premio esta vez. ¡Probá mañana!";
 const PRIZES = [
-  { label: "🎁 ¡Ganaste 1.000 fichas!", weight: 30 },
-  { label: "🎁 ¡Ganaste 500 fichas!",   weight: 70 },
+  { label: "🎁 ¡Ganaste 500 fichas!", weight: 1 }, // único premio
 ];
 
 // Dominios permitidos
 const ALLOWED_HOSTS = [
-  "raspadita-teaml5.vercel.app", // tu dominio actual
-  "teaml5-raspadita.vercel.app", // si todavía lo usás
+  "raspadita-teaml5.vercel.app", // prod (cambia si tu dominio es otro)
   "localhost:3000"               // dev
 ];
-// Permitir (o no) previews aleatorios de Vercel (*.vercel.app)
 const ALLOW_VERCEL_PREVIEWS = false;
 
-// Rate limit (por IP, 1 minuto)
-const ipHitWindow = 60 * 1000;
+// Rate limit (IP)
+const ipHitWindow = 60 * 1000; // 1 minuto
 const ipMaxHitsPerWindow = 20;
 const ipHits = new Map();      // ip -> { tsArray: number[] }
 
@@ -29,7 +26,6 @@ const issuedCodes   = new Map();   // code -> { ts }
 const clientResults = new Map();   // clientId -> { dayKey, resultado }
 
 export default async function handler(req, res) {
-  // Headers comunes
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
 
@@ -48,10 +44,8 @@ export default async function handler(req, res) {
     return res.status(403).json({ ok:false, error:"Acceso denegado" });
   }
 
-  // CORS habilitado solo si el origen es válido
   addCorsAllowed(res, allowed.origin);
 
-  // Rate-limit por IP
   const ip = getClientIP(req).chosen;
   if (isRateLimited(ip)) {
     return res.status(429).json({ ok:false, error:"Demasiadas solicitudes" });
@@ -61,11 +55,9 @@ export default async function handler(req, res) {
     const body = parseBody(req.body);
     const clientId = (body.clientId || "").toString().trim() || null;
 
-    // Día UTC
     const day = new Date(); day.setUTCHours(0,0,0,0);
     const dayKey = day.toISOString().slice(0,10);
 
-    // Si ya jugó este clientId hoy, devolver el mismo resultado
     if (clientId) {
       const prev = clientResults.get(clientId);
       if (prev && prev.dayKey === dayKey) {
@@ -78,37 +70,28 @@ export default async function handler(req, res) {
       }
     }
 
-    // Seed estable por red/día/SECRET (NO usamos clientId para definir si gana)
     const netKey = toIPv4Net24(ip);
-    const baseSeed = `${netKey}:${dayKey}:${SECRET}`;
+    const baseSeed = clientId
+      ? `${netKey}:${dayKey}:${clientId}:${SECRET}`
+      : `${netKey}:${dayKey}:${SECRET}`;
 
-    // Decide si gana
-    const rndWin = pseudoRandom(baseSeed); // [0,1)
+    const rndWin = pseudoRandom(baseSeed);
     const win = rndWin < PROB_WIN;
 
-    // Mensaje (texto plano)
-    let mensaje;
+    let mensaje = LOSE_TEXT;
     if (win) {
-      const rndPrize = pseudoRandom(baseSeed + ":prize");
-      const prize = pickWeighted(PRIZES, rndPrize);
-      mensaje = String(prize?.label ?? "🎁 Premio");
-    } else {
-      mensaje = String(LOSE_TEXT);
+      mensaje = "🎁 ¡Ganaste 500 fichas!";
     }
 
-    // Sello (UTC) y “código” verificable
     const nowUtc = new Date().toISOString();
     const raw = `${nowUtc}|${netKey}|${clientId || "NOCLIENT"}|${win ? "W":"L"}`;
     const code = hmac(raw, SECRET).slice(0,8).toUpperCase();
 
-    // Guarda en memoria
     const ts = Date.now();
     issuedCodes.set(code, { ts });
     cleanupIssued(ts);
 
     const resultado = { mensaje, nowUtc, code, win };
-
-    // Cache por clientId (para que el mismo navegador vea lo mismo en el día)
     if (clientId) {
       clientResults.set(clientId, { dayKey, resultado });
       cleanupClientResults(ts);
@@ -183,16 +166,6 @@ function hmac(text, secret){
   mix(text); mix(secret);
   return acc.toString(16);
 }
-function pickWeighted(items, r) {
-  const total = items.reduce((a,b)=>a + (b.weight||0), 0);
-  if (total <= 0) return items[0] || { label:"🎁 Premio", weight:1 };
-  let acc = 0;
-  for (const it of items) {
-    acc += (it.weight||0) / total;
-    if (r <= acc) return it;
-  }
-  return items[items.length-1];
-}
 function cleanupIssued(now){
   const ONE_DAY = 24*60*60*1000;
   for (const [k,v] of issuedCodes) if (now - v.ts > ONE_DAY) issuedCodes.delete(k);
@@ -205,8 +178,6 @@ function cleanupClientResults(now){
     if (now - dayMs > ONE_DAY) clientResults.delete(k);
   }
 }
-
-// ---- Rate-limit por IP (ventana rodante 1 minuto)
 function isRateLimited(ip){
   const now = Date.now();
   const rec = ipHits.get(ip) || { tsArray: [] };

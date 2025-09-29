@@ -101,8 +101,10 @@
         </div>
 
         <div class="actions">
-          <button id="whatsappBtn" class="btn">📲 Enviar captura por WhatsApp</button>
+          <button id="saveBtn" class="btn">📸 Guardar captura</button>
+          <button id="whatsappBtn" class="btn">📲 Enviar por WhatsApp</button>
         </div>
+        <div id="fallback" class="hint hidden">👉 Si no aparece WhatsApp, enviá tu captura a <a href="https://teaml-5.vercel.app" target="_blank" rel="noopener noreferrer">teaml-5.vercel.app</a></div>
         <div id="hint" class="hint">Raspá con el dedo o el mouse. Al revelar ~50% se bloquea la jugada de hoy.</div>
       </div>
     </div>
@@ -126,11 +128,13 @@
   const ctx    = canvas.getContext('2d', { willReadFrequently: true });
   const premio = document.getElementById('premio');
   const stamp  = document.getElementById('stamp');
+  const saveBtn= document.getElementById('saveBtn');
   const waBtn  = document.getElementById('whatsappBtn');
   const hintEl = document.getElementById('hint');
+  const fallbackEl = document.getElementById('fallback');
   const confettiLayer = document.getElementById('confettiLayer');
 
-  let WA_NUMBER = ""; // se carga desde el backend en /api/sorteo
+  let WA_NUMBER = ""; // llega desde /api/sorteo
   const TODAY = new Date().toISOString().slice(0,10);
   const RESULT_KEY = 'raspadita:result:' + TODAY;
 
@@ -215,12 +219,18 @@
         setSafePrizeMessage(data.mensaje || "¡GANASTE!", currentStampText);
         stamp.textContent = currentStampText;
         stamp.style.display = 'inline-block';
-        waBtn.style.display = 'inline-block';
+        saveBtn.style.display = 'inline-block';
+        if (WA_NUMBER) {
+          waBtn.style.display = 'inline-block';
+        } else {
+          fallbackEl.classList.remove('hidden');
+        }
         hintEl.textContent = "⏳ Ya jugaste hoy. Volvé mañana.";
       } else {
         setSafePrizeMessage("😅 Sin premio esta vez. Probá mañana.", currentStampText);
         stamp.textContent = currentStampText;
         stamp.style.display = 'inline-block';
+        saveBtn.style.display = 'none';
         waBtn.style.display = 'none';
         hintEl.textContent = "⏳ Ya probaste hoy a esta hora ☝️";
       }
@@ -251,7 +261,8 @@
     ctx.fillStyle=grad; ctx.fillRect(0,0,w,h);
     ctx.fillStyle='rgba(0,0,0,.35)'; ctx.font="bold 20px Inter, Arial";
     ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText("Raspá aquí", w/2, h/2);
-    revealed=false; waBtn.style.display='none'; canvas.style.opacity=1; canvas.style.display='block';
+    revealed=false; saveBtn.style.display='none'; waBtn.style.display='none'; fallbackEl.classList.add('hidden');
+    canvas.style.opacity=1; canvas.style.display='block';
   }
   function pos(e){ const r=canvas.getBoundingClientRect(); const x=(e.touches?e.touches[0].clientX:e.clientX)-r.left; const y=(e.touches?e.touches[0].clientY:e.clientY)-r.top; return {x,y}; }
   function scratch(e){
@@ -293,7 +304,12 @@
     if (currentWin){
       setSafePrizeMessage(sorteo.mensaje, currentStampText);
       stamp.textContent = currentStampText; stamp.style.display='inline-block';
-      waBtn.style.display = 'inline-block';
+      saveBtn.style.display = 'inline-block';
+      if (WA_NUMBER) {
+        waBtn.style.display = 'inline-block';
+      } else {
+        fallbackEl.classList.remove('hidden');
+      }
       confetti(6000, 140);
 
       localStorage.setItem(RESULT_KEY, JSON.stringify({
@@ -304,6 +320,7 @@
     } else {
       setSafePrizeMessage("😅 Sin premio esta vez. Probá mañana.", currentStampText);
       stamp.textContent = currentStampText; stamp.style.display='inline-block';
+      saveBtn.style.display = 'none';
       waBtn.style.display = 'none';
 
       localStorage.setItem(RESULT_KEY, JSON.stringify({
@@ -327,7 +344,7 @@
   canvas.addEventListener('pointercancel',()=>{ drawing=false; last=null; });
   canvas.style.touchAction='none';
 
-  // WhatsApp + captura
+  // Captura
   async function captureCardBlob(){
     if (!window.html2canvas) return null;
     const cap = await html2canvas(card,{backgroundColor:null, scale:Math.min(window.devicePixelRatio||1,2), useCORS:true});
@@ -338,11 +355,17 @@
     a.href=url; a.download=filename; document.body.appendChild(a); a.click();
     setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 100);
   }
+
+  saveBtn.addEventListener('click', async ()=>{
+    const blob = await captureCardBlob();
+    if (blob) downloadBlob(blob,'premio.png');
+  });
+
   waBtn.addEventListener('click', async ()=>{
-    if (!currentWin) return;
+    if (!currentWin || !WA_NUMBER) return;
     const baseText = premio.textContent.replace(/\s+/g,' ').trim();
     const mensaje  = `¡Hola! Acabo de ganar en la RASPADITA TEAM L-5: ${baseText} — ${currentStampText}`;
-    const waURL    = WA_NUMBER ? `https://wa.me/${WA_NUMBER}?text=${encodeURIComponent(mensaje)}` : null;
+    const waURL    = `https://wa.me/${WA_NUMBER}?text=${encodeURIComponent(mensaje)}`;
 
     const blob = await captureCardBlob();
     try{
@@ -350,10 +373,10 @@
         await navigator.share({ files:[new File([blob],'premio.png',{type:'image/png'})], title:'Premio RASPADITA TEAM L-5', text:mensaje });
         return;
       }
-    }catch(e){ /* share fallback */ }
+    }catch(e){ /* ignore */ }
 
     if (blob) downloadBlob(blob,'premio.png');
-    if (waURL) window.open(waURL,'_blank');
+    window.open(waURL,'_blank');
   });
 
   // Atajo admin: Shift+R limpia el resultado de hoy
